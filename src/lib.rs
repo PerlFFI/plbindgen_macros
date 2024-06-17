@@ -2,17 +2,18 @@ use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use syn::{parse_macro_input, FnArg, ItemFn, TypeReference, TypeSlice};
 
-/// the platypus macro is a procedural macro that will generate a C-compatible function,
+/// the plbindgen macro is a procedural macro that will generate a C-compatible function,
 /// and support semi-automatic conversion of &[T] to *const T and usize.
 /// 
 /// it is probably most useful in combination with plbindgen.
 #[proc_macro_attribute]
-pub fn platypus(_attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn export(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let input = parse_macro_input!(item as ItemFn);
 
     // let _args = parse_macro_input!(attr as AttributeArgs);
 
     let sig = &input.sig;
+    let unsafety = &sig.unsafety;
     let fn_name = &sig.ident;
     let inputs = &sig.inputs;
     let output = &sig.output;
@@ -21,14 +22,14 @@ pub fn platypus(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut new_inputs = Vec::new();
 
     // Because rust-analyzer does not like adding new secret arguments,
-    // we we detect an [T] or &[T] argument, we will require the next argument is a usize
+    // when we detect an &[T] argument, we will require the next argument is a usize
     // with a particular name, and then we will construct the slice ourselves.
     for input in inputs {
         if let FnArg::Typed(pat_type) = input {
             let pat = &pat_type.pat;
             let mut ty = &pat_type.ty;
-            // C FFI can't do slices, but platypus can do arrays.
-            // If we see a name: [T], then let's do name: *const T, name_len: usize
+            // C FFI can't do slices, but FFI::Platypus can do arrays.
+            // If we see a name: &[T], then let's do name: *const T, name_len: usize
             // and then construct our own slice with the same name
             let mut is_slice = false;
             if let syn::Type::Reference(TypeReference { elem, .. }) = ty.as_ref() {
@@ -60,10 +61,39 @@ pub fn platypus(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let expanded = quote! {
         #[no_mangle]
-        pub unsafe extern "C" fn #fn_name(#(#new_inputs),*) #output {
+        pub #unsafety extern "C" fn #fn_name(#(#new_inputs),*) #output {
             #(#defs)*
             #block
         }
+    };
+
+    TokenStream::from(expanded)
+}
+
+#[proc_macro_attribute]
+pub fn opaque(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(item as syn::ItemStruct);
+
+    let ident = &input.ident;
+    let fields = &input.fields;
+    let semi_token = &input.semi_token;
+    let expanded = quote! {
+        pub struct #ident #fields #semi_token
+    };
+
+    TokenStream::from(expanded)
+}
+
+#[proc_macro_attribute]
+pub fn record(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(item as syn::ItemStruct);
+
+    let ident = &input.ident;
+    let fields = &input.fields;
+    let semi_token = &input.semi_token;
+    let expanded = quote! {
+        #[repr(C)]
+        pub struct #ident #fields #semi_token
     };
 
     TokenStream::from(expanded)
