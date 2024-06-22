@@ -1,6 +1,12 @@
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
-use syn::{parse_macro_input, FnArg, ItemFn, TypeReference, TypeSlice};
+use syn::{parse_macro_input, FnArg, ItemFn, PatType, TypePath, TypeReference, TypeSlice};
+
+
+struct CheckArg {
+    ident: syn::Ident,
+    fn_arg: syn::FnArg,
+}
 
 /// the plbindgen macro is a procedural macro that will generate a C-compatible function
 /// and signals to plbindgen that it may produce FFI::Platypus bindings for it.
@@ -24,6 +30,39 @@ pub fn export(_attr: TokenStream, item: TokenStream) -> TokenStream {
             .to_compile_error()
             .into();
     }
+    let mut check_arg: Option<CheckArg> = None;
+    for input in inputs {
+        let syn::FnArg::Typed(PatType { ty, pat, .. }) = input else {
+            return syn::Error::new_spanned(input, "expected typed argument")
+                .to_compile_error()
+                .into();
+        };
+        let syn::Pat::Ident(syn::PatIdent { ident: name, .. }) = pat.as_ref() else {
+            return syn::Error::new_spanned(pat, "expected identifier")
+                .to_compile_error()
+                .into();
+        };
+
+        match check_arg.take()  {
+            Some(CheckArg { ref ident, fn_arg }) if ident != name || !is_usize(ty) => {
+                return syn::Error::new_spanned(fn_arg, format!("must be followed by {}: usize", ident))
+                    .to_compile_error()
+                    .into();
+            }
+            None if is_array(ty) => {
+                check_arg.replace(CheckArg {
+                    ident: format_ident!("{name}_len"),
+                    fn_arg: input.clone(),
+                });
+            }
+            _ => {},
+        }
+    }
+    if let Some(CheckArg { ident, fn_arg }) = check_arg {
+        return syn::Error::new_spanned(fn_arg, format!("must be followed by {}: usize", ident))
+            .to_compile_error()
+            .into();
+    }
 
     let expanded = quote! {
         #[no_mangle]
@@ -33,6 +72,25 @@ pub fn export(_attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     TokenStream::from(expanded)
+}
+
+// returns true if is array<T>, where array is our type alias
+fn is_array(ty: &syn::Type) -> bool {
+    if let syn::Type::Path(TypePath { path, .. }) = ty {
+        if let Some(segment) = path.segments.first() {
+            if segment.ident == "array" {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn is_usize(ty: &syn::Type) -> bool {
+    if let syn::Type::Path(TypePath { path, .. }) = ty {
+        return path.is_ident("usize");
+    }
+    false
 }
 
 /// the record macro is a procedural macro that will generate a C-compatible struct,
@@ -51,7 +109,7 @@ pub fn record(_attr: TokenStream, item: TokenStream) -> TokenStream {
             .to_compile_error()
             .into();
     }
-    
+
     if !matches!(fields, syn::Fields::Named(_)) {
         return syn::Error::new_spanned(fields, "#[record] struct must have named fields")
             .to_compile_error()
