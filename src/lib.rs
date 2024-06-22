@@ -93,6 +93,39 @@ fn is_usize(ty: &syn::Type) -> bool {
     false
 }
 
+/// #[opaque] or #[opaque(rename="...")] informs plbindgen that the struct is an opaque pointer.
+/// By default the name of the struct will be used for the platypus type alias, but you can rename it.
+#[proc_macro_attribute]
+pub fn opaque(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(item as syn::ItemStruct);
+
+    let vis = &input.vis;
+    let ident = &input.ident;
+    let fields = &input.fields;
+    let semi_token = &input.semi_token;
+
+    if !matches!(vis, syn::Visibility::Public(_)) {
+        return syn::Error::new_spanned(vis, "#[opaque] struct must be public")
+            .to_compile_error()
+            .into();
+    }
+
+    if !attr.is_empty() {
+        let rename = syn::parse_macro_input!(attr as syn::MetaNameValue);
+        if !rename.path.is_ident("rename") {
+            return syn::Error::new_spanned(rename, "expected #[opaque(rename = \"...\")]")
+                .to_compile_error()
+                .into();
+        }
+    };
+
+    let expanded = quote! {
+        pub struct #ident #fields #semi_token
+    };
+
+    TokenStream::from(expanded)
+}
+
 /// the record macro is a procedural macro that will generate a C-compatible struct,
 /// and signals to plbindgen that it may produce FFI::Platypus::Record bindings for it.
 #[proc_macro_attribute]
